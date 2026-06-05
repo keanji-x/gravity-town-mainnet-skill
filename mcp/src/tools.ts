@@ -37,6 +37,10 @@ export function registerTools(server: any, chain: ChainClient, opts: ToolOptions
     "arena_list_inventory",
     "arena_list_market",
     "arena_get_recent_matches",
+    "arena_simulate_match",
+    "arena_preview_elo",
+    "arena_get_card",
+    "arena_get_tier_info",
   ]);
   const adminTools = new Set([
     "set_oracle_agent",

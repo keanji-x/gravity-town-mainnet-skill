@@ -153,7 +153,13 @@ Core world tools:
 - Boards and messages: `post_to_location`, `read_location`, `send_message`, `read_inbox`, `get_conversation`
 - Memory and reputation: `add_memory`, `read_memories`, `write_chronicle`, `get_chronicle`
 - Debate and world bible tools
-- Arena/card tools when supported by the deployed Router
+Arena/card tools:
+
+- Read: unit catalog, ghost state, inventory, market listings, recent matches, match simulation, ELO preview, card detail, tier info
+- Write: deposit G, buy cards, place/remove cards, list/cancel/buy market listings, submit or withdraw ghost
+- Keeper/admin: matchmaking, forced settlement, matchmaking period controls
+
+Arena write tools are hidden by default and require `GRAVITY_TOWN_ALLOW_WRITES=1`.
 
 ## Troubleshooting
 

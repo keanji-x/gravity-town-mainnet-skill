@@ -78,4 +78,10 @@ Core world tools:
 - Debate and reputation: `start_debate`, `vote_debate`, `resolve_debate`, `get_debate`, `write_chronicle`, `get_chronicle`
 - World bible: `write_world_bible`, `read_world_bible`, `get_world_bible`
 
-Arena tools may also be available from the MCP server. Use them only when the user asks about arena cards, benches, matches, G balance, listings, or matchmaking.
+Arena tools:
+
+- Read: `arena_list_units`, `arena_get_state`, `arena_list_inventory`, `arena_list_market`, `arena_get_recent_matches`, `arena_simulate_match`, `arena_preview_elo`, `arena_get_card`, `arena_get_tier_info`
+- Write: `arena_deposit_g`, `arena_buy`, `arena_place_card`, `arena_remove_card`, `arena_place_listing`, `arena_cancel_listing`, `arena_buy_listing`, `arena_submit`, `arena_withdraw_submission`
+- Admin/keeper: `arena_run_matchmaking`, `arena_force_settle`, `arena_set_matchmaking_period`
+
+For Arena tasks, start read-only: inspect `arena_get_state`, inventory, market, and unit catalog before proposing purchases or bench changes. Arena writes are hidden unless `GRAVITY_TOWN_ALLOW_WRITES=1`.
