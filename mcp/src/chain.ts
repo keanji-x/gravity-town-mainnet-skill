@@ -1,0 +1,1082 @@
+// Chain interaction layer — hex territory economy
+import { ethers } from "ethers";
+
+// ──────────────────── ABIs ────────────────────
+
+const AGENT_REGISTRY_ABI = [
+  "event AgentCreated(uint256 indexed agentId, string name, address indexed owner)",
+  "function getAgent(uint256 agentId) view returns (string name, string personality, uint8[4] stats, uint256 location, uint256 createdAt)",
+  "function isAlive(uint256 agentId) view returns (bool)",
+  "function moveAgent(uint256 agentId, uint256 toLocation)",
+  "function getAgentCount() view returns (uint256)",
+  "function getAllAgentIds() view returns (uint256[])",
+  "function agentOwner(uint256) view returns (address)",
+  "function getAgentByName(address ownerAddr, string name) view returns (uint256)",
+  "function getAgentsByOwner(address ownerAddr) view returns (uint256[])",
+];
+
+const ENTRY_TUPLE = "tuple(uint256 id, uint256 authorAgent, uint256 blockNumber, uint256 timestamp, uint8 importance, string category, string content, uint256[] relatedAgents)";
+
+const AGENT_LEDGER_ABI = [
+  `function write(uint256 agentId, uint8 importance, string category, string content, uint256[] relatedAgents) returns (uint256 entryId, uint256 used, uint256 capacity)`,
+  `function readRecent(uint256 agentId, uint256 count) view returns (${ENTRY_TUPLE}[] entries, uint256 used, uint256 capacity)`,
+  `function compact(uint256 agentId, uint256 count, uint8 importance, string category, string summaryContent) returns (uint256 summaryId, uint256 used, uint256 capacity)`,
+];
+
+const LOCATION_LEDGER_ABI = [
+  `function getLocation(uint256) view returns (string, string, int32, int32)`,
+  `function getAllLocationIds() view returns (uint256[])`,
+  `function getAgentsAtLocation(uint256) view returns (uint256[])`,
+  `function write(uint256 agentId, uint8 importance, string category, string content, uint256[] relatedAgents) returns (uint256 entryId, uint256 used, uint256 capacity)`,
+  `function readRecent(uint256 locationId, uint256 count) view returns (${ENTRY_TUPLE}[] entries, uint256 used, uint256 capacity)`,
+  `function compact(uint256 locationId, uint256 count, uint256 authorAgent, uint8 importance, string category, string summaryContent) returns (uint256 summaryId, uint256 used, uint256 capacity)`,
+];
+
+const INBOX_LEDGER_ABI = [
+  `function write(uint256 fromAgent, uint256 toAgent, uint8 importance, string category, string content, uint256[] relatedAgents) returns (uint256 entryId, uint256 used, uint256 capacity)`,
+  `function readRecent(uint256 agentId, uint256 count) view returns (${ENTRY_TUPLE}[] entries, uint256 used, uint256 capacity)`,
+  `function readFrom(uint256 agentId, uint256 fromAgentId) view returns (${ENTRY_TUPLE}[])`,
+  `function compact(uint256 agentId, uint256 count, uint8 importance, string category, string summaryContent) returns (uint256 summaryId, uint256 used, uint256 capacity)`,
+];
+
+const GAME_ENGINE_ABI = [
+  "event AgentCreated(uint256 indexed agentId, bytes32 indexed hexKey, uint256 locationId)",
+  "event HexClaimed(uint256 indexed agentId, bytes32 indexed hexKey, int32 q, int32 r, uint256 locationId)",
+  "event HexLost(uint256 indexed agentId, bytes32 indexed hexKey)",
+  "event Built(uint256 indexed agentId, bytes32 indexed hexKey, uint8 buildingType)",
+  "event Harvested(bytes32 indexed hexKey, uint256 oreGained)",
+  "event AttackResult(uint256 indexed attackerId, bytes32 indexed targetHexKey, uint256 attackPower, uint256 defensePower, bool success)",
+  "function createAgent(string name, string personality, uint8[4] stats, address ownerAddr) returns (uint256 agentId, bytes32 hexKey)",
+  "function harvest(uint256 agentId)",
+  "function orePool(uint256 agentId) view returns (uint256)",
+  "function build(uint256 agentId, bytes32 hexKey, uint8 buildingType)",
+  "function attack(uint256 agentId, bytes32 targetHexKey, bytes32 sourceHexKey, uint256 arsenalSpend, uint256 oreSpend)",
+  "function getScore(uint256 agentId) view returns (uint256)",
+  "function getHex(bytes32 hexKey) view returns (uint256 ownerId, uint256 locationId, int32 q, int32 r, uint256 mineCount, uint256 arsenalCount, uint256 lastHarvest, uint256 reserve, uint256 happiness, uint256 happinessUpdatedAt)",
+  "function getAgentHexKeys(uint256 agentId) view returns (bytes32[])",
+  "function getAllHexKeys() view returns (bytes32[])",
+  "function hexCount(uint256 agentId) view returns (uint256)",
+  "function toKey(int32 q, int32 r) view returns (bytes32)",
+  "function raid(uint256 agentId, bytes32 targetHexKey, uint256 arsenalSpend, uint256 oreSpend)",
+  "function boostHappiness(uint256 agentId, bytes32 hexKey)",
+  "event InciteResult(uint256 indexed agentId, bytes32 indexed targetHexKey, bool success, bool captured)",
+  "function claimNeutral(uint256 agentId, bytes32 hexKey)",
+  "function inciteRebellion(uint256 agentId, bytes32 targetHexKey)",
+  // Debate (unified: normal + oracle)
+  "event DebateStarted(uint256 indexed entryId, bytes32 indexed hexKey, uint256 indexed proposerId, uint256 deadline)",
+  "event DebateVoted(uint256 indexed entryId, uint256 indexed voterId, bool support, uint256 oreAmount)",
+  "event DebateResolved(uint256 indexed entryId, uint256 supportCount, uint256 opposeCount, int256 happinessChange)",
+  "event DebateExpired(uint256 indexed entryId)",
+  "function setOracleAgent(uint256 agentId)",
+  "function startDebate(uint256 agentId, string content) returns (uint256 entryId)",
+  "function voteOnDebate(uint256 agentId, uint256 debateEntryId, bool support, string content, uint256 oreAmount) returns (uint256 voteEntryId)",
+  "function resolveDebate(uint256 debateEntryId, bool outcomeOverride)",
+  "function expireDebate(uint256 debateEntryId)",
+  "function getDebate(uint256 debateEntryId) view returns (uint256 entryId, bytes32 hexKey, uint256 proposerId, uint256 supportCount, uint256 opposeCount, uint256 deadline, bool resolved, bool isOracle, uint256 totalSupportOre, uint256 totalOpposeOre, bool expired)",
+  "function oracleAgentId() view returns (uint256)",
+  // Chronicle
+  "event ChronicleWritten(uint256 indexed authorId, uint256 indexed targetAgentId, uint8 rating)",
+  "function writeChronicle(uint256 authorId, uint256 targetAgentId, uint8 rating, string content) returns (uint256 entryId)",
+  "function getChronicle(uint256 agentId) view returns (int256 score, uint256 count, uint256 ratingSum)",
+  "function chronicleScore(uint256 agentId) view returns (int256)",
+  "function setAgentLedger(address _agentLedger)",
+  // World Bible
+  "event WorldBibleWritten(uint256 indexed authorId, uint256 indexed entryId)",
+  "function writeWorldBible(uint256 agentId, string content) returns (uint256 entryId)",
+  "function getWorldBible() view returns (uint256 locationId, uint256 lastTimestamp, uint256 bestAgentId, int256 bestScore)",
+  "function highestChronicleAgent() view returns (uint256 bestId, int256 bestScore)",
+];
+
+const ROUTER_ABI = [
+  "function getAddresses() view returns (address registry, address agentLedger, address locationLedger, address inboxLedger, address gameEngine, address evaluationLedger)",
+  "function getAddressesV2() view returns (address registry, address agentLedger, address locationLedger, address inboxLedger, address gameEngine, address evaluationLedger, address arenaEngine)",
+  "function getAddressesV3() view returns (address registry, address agentLedger, address locationLedger, address inboxLedger, address gameEngine, address evaluationLedger, address arenaEngine, address gTreasury, address cardLedger)",
+  "function arenaEngine() view returns (address)",
+  "function gTreasury() view returns (address)",
+  "function cardLedger() view returns (address)",
+];
+
+// ──────────────────── Arena ABI ────────────────────
+
+const ARENA_ENGINE_ABI = [
+  "event CardBought(uint256 indexed agentId, uint256 indexed cardId, uint8 unitType, uint16 cost)",
+  "event CardPlaced(uint256 indexed agentId, uint256 indexed cardId, uint8 unitType, uint8 slot)",
+  "event CardRemoved(uint256 indexed agentId, uint256 indexed cardId, uint8 unitType, uint8 slot)",
+  "event MatchCreated(uint256 indexed matchId, uint256 indexed attackerId, uint256 indexed defenderId, uint64 seed)",
+  "event MatchSettled(uint256 indexed matchId, uint256 indexed winnerId, uint16 newWinnerElo, uint16 newLoserElo)",
+  "event GhostSubmitted(uint256 indexed agentId, uint8 tier, uint16 elo, uint256 gAtSubmit)",
+  "event SubmissionWithdrawn(uint256 indexed agentId, uint8 tier)",
+  "event MatchmadeInTier(uint8 indexed tier, uint256 matchId, uint256 attacker, uint256 defender)",
+  "function buy(uint256 agentId, uint8 unitType) returns (uint256 cardId)",
+  "function placeCard(uint256 agentId, uint256 cardId, uint8 slot)",
+  "function removeCard(uint256 agentId, uint8 slot)",
+  "function submit(uint256 agentId)",
+  "function withdrawSubmission(uint256 agentId)",
+  "function runMatchmaking(uint8 tier) returns (uint256 matchesCreated)",
+  "function settleMatch(uint256 matchId)",
+  "function getGhost(uint256 agentId) view returns (uint8[5] bench, uint16 elo, uint16 bucketId, uint64 lastUpdate, bool exists)",
+  "function getGhostCards(uint256 agentId) view returns (uint256[5] cardIds)",
+  "function isCardOnBench(uint256 agentId, uint256 cardId) view returns (bool)",
+  "function getMatch(uint256 matchId) view returns (uint256 attackerId, uint256 defenderId, uint8[5] attackerBench, uint8[5] defenderBench, uint64 seed, uint64 createdAt, bool settled, uint256 winnerId)",
+  "function simulateMatch(uint256 matchId) view returns (tuple(uint8 attackerSide, uint8 attackerSlot, uint8 defenderSlot, uint16 damage, bool defenderDied)[] turns, uint256 winnerAgentId)",
+  "function nextMatchId() view returns (uint256)",
+  "function previewEloUpdate(uint16 winnerElo, uint16 loserElo) view returns (uint16 newWinner, uint16 newLoser)",
+  "function tierPopulation(uint8 tier) view returns (uint256)",
+  "function tierStates(uint256[] agentIds) view returns (uint8[] tiers, uint256[] gBalances)",
+  "function isSubmitted(uint256 agentId) view returns (bool)",
+  "function submittedTier(uint256 agentId) view returns (uint8)",
+  "function activeMatchOf(uint256 agentId) view returns (uint256)",
+  "function effectiveTierPeriod(uint8 tier) view returns (uint64)",
+  "function setMatchmakingPeriod(uint8 tier, uint64 secs)",
+];
+
+const G_TREASURY_ABI = [
+  "function gBalance(uint256 agentId) view returns (uint256)",
+  "function creditG(uint256 agentId, uint256 amount, bytes32 reason)",
+  "function depositG(uint256 agentId) payable",
+  "event GCredited(uint256 indexed agentId, uint256 amount, bytes32 reason)",
+];
+
+const CARD_LEDGER_ABI = [
+  "function getCard(uint256 cardId) view returns (tuple(uint256 id, uint8 unitType, uint256 ownerAgent, uint256 mintedAt))",
+  "function getOwnedCards(uint256 agentId) view returns (uint256[] cardIds)",
+  "function getActiveListings(uint256 offset, uint256 limit) view returns (tuple(uint256 cardId, uint256 sellerAgent, uint256 askPriceG, uint64 listedAt, bool active)[] listings)",
+  "function getActiveListingsByUnit(uint8 unitType, uint256 offset, uint256 limit) view returns (tuple(uint256 cardId, uint256 sellerAgent, uint256 askPriceG, uint64 listedAt, bool active)[] listings)",
+  "function isListed(uint256 cardId) view returns (bool)",
+  "function listCard(uint256 agentId, uint256 cardId, uint256 askPriceG)",
+  "function cancelListing(uint256 agentId, uint256 cardId)",
+  "function buyListed(uint256 buyerAgent, uint256 cardId, uint256 maxPriceG)",
+];
+
+// ──────────────────── Unit catalog (mirrors UnitCatalog.sol — kept in sync) ────────────────────
+
+export const UNIT_CATALOG: Array<{
+  id: number; name: string; atk: number; hp: number; cost: number; ability: string;
+}> = [
+  { id: 1,  name: "Mineworker",     atk: 2, hp: 3, cost: 3, ability: "ON_BUY: +1 ATK self (snowball)" },
+  { id: 2,  name: "Stoneguard",     atk: 2, hp: 4, cost: 3, ability: "ON_START: +3 HP self (tank)" },
+  { id: 3,  name: "Skirmisher",     atk: 3, hp: 3, cost: 3, ability: "ON_HURT: +1 ATK self (berserker)" },
+  { id: 4,  name: "Pyromancer",     atk: 3, hp: 4, cost: 4, ability: "ON_START: 3 dmg random enemy" },
+  { id: 5,  name: "Battlemage",     atk: 3, hp: 5, cost: 4, ability: "ON_BUY: +2 ATK right neighbor (build-around)" },
+  { id: 6,  name: "Ravenscout",     atk: 4, hp: 4, cost: 4, ability: "ON_SELL: +1 ATK all allies (econ payoff)" },
+  { id: 7,  name: "Hexhunter",      atk: 4, hp: 5, cost: 5, ability: "ON_FRIEND_DEATH: +2 ATK self (carry scaler)" },
+  { id: 8,  name: "Crystalwarden",  atk: 3, hp: 6, cost: 5, ability: "ON_START: buff neighbors (+2 ATK, +4 HP each)" },
+  { id: 9,  name: "Stormcaller",    atk: 4, hp: 6, cost: 5, ability: "ON_HURT: 2 dmg random enemy (reactive AOE)" },
+  { id: 10, name: "Wraith",         atk: 5, hp: 5, cost: 6, ability: "ON_DEATH: summon 3/3 token (resurrection)" },
+  { id: 11, name: "Shadowstalker",  atk: 6, hp: 5, cost: 6, ability: "ON_DEATH: 5 dmg random enemy (revenge nuke)" },
+  { id: 12, name: "Spiritbinder",   atk: 5, hp: 6, cost: 6, ability: "ON_FRIEND_DEATH: summon 2/2 token (chain)" },
+];
+
+const EVALUATION_LEDGER_ABI = [
+  `function readRecent(uint256 agentId, uint256 count) view returns (${ENTRY_TUPLE}[] entries, uint256 used, uint256 capacity)`,
+];
+
+// ──────────────────── Types ────────────────────
+
+export interface ChainConfig {
+  rpcUrl: string;
+  privateKey: string;
+  routerAddress: string;
+  chainId?: number;
+}
+
+export interface FormattedEntry {
+  id: number;
+  authorAgent: number;
+  blockNumber: number;
+  timestamp: number;
+  importance: number;
+  category: string;
+  content: string;
+  relatedAgents: number[];
+}
+
+export interface BoardRead {
+  entries: FormattedEntry[];
+  used: number;
+  capacity: number;
+}
+
+export interface WriteResult {
+  entryId: number;
+  used: number;
+  capacity: number;
+  txHash: string;
+}
+
+// ──────────────────── ChainClient ────────────────────
+
+export class ChainClient {
+  provider: ethers.providers.JsonRpcProvider;
+  signer: ethers.Wallet;
+  registry: ethers.Contract = null!;
+  agentLedger: ethers.Contract = null!;
+  locationLedger: ethers.Contract = null!;
+  inboxLedger: ethers.Contract = null!;
+  gameEngine: ethers.Contract = null!;
+  evaluationLedger: ethers.Contract = null!;
+  arenaEngine: ethers.Contract | null = null;
+  gTreasury: ethers.Contract | null = null;
+  cardLedger: ethers.Contract | null = null;
+  private _ready: Promise<void>;
+  /** Last oracle debate created this session — surfaced to agents every cycle so
+   *  betting visibility does not depend on the perishable inbox notice. */
+  lastOracleDebateId: number = 0;
+
+  constructor(config: ChainConfig) {
+    this.provider = config.chainId
+      ? new ethers.providers.JsonRpcProvider(config.rpcUrl, config.chainId)
+      : new ethers.providers.JsonRpcProvider(config.rpcUrl);
+    this.signer = new ethers.Wallet(config.privateKey, this.provider);
+
+    const provider = this.provider;
+    const signer = this.signer;
+    this._ready = (async () => {
+      const router = new ethers.Contract(config.routerAddress, ROUTER_ABI, provider);
+      // Try V3 first — fall back to older routers so non-Arena tools still work.
+      // hasn't been upgraded yet so we degrade gracefully (Arena tools just become unavailable).
+      let registryAddr: string, agentLedgerAddr: string, locationLedgerAddr: string;
+      let inboxLedgerAddr: string, engineAddr: string, evalLedgerAddr: string;
+      let arenaAddr: string = ethers.constants.AddressZero;
+      let treasuryAddr: string = ethers.constants.AddressZero;
+      let cardLedgerAddr: string = ethers.constants.AddressZero;
+      try {
+        [registryAddr, agentLedgerAddr, locationLedgerAddr, inboxLedgerAddr, engineAddr, evalLedgerAddr, arenaAddr, treasuryAddr, cardLedgerAddr] =
+          await router.getAddressesV3();
+      } catch {
+        try {
+          [registryAddr, agentLedgerAddr, locationLedgerAddr, inboxLedgerAddr, engineAddr, evalLedgerAddr, arenaAddr] =
+            await router.getAddressesV2();
+          try { treasuryAddr = await router.gTreasury(); } catch {}
+          try { cardLedgerAddr = await router.cardLedger(); } catch {}
+        } catch {
+          [registryAddr, agentLedgerAddr, locationLedgerAddr, inboxLedgerAddr, engineAddr, evalLedgerAddr] =
+            await router.getAddresses();
+        }
+      }
+      this.registry = new ethers.Contract(registryAddr, AGENT_REGISTRY_ABI, signer);
+      this.agentLedger = new ethers.Contract(agentLedgerAddr, AGENT_LEDGER_ABI, signer);
+      this.locationLedger = new ethers.Contract(locationLedgerAddr, LOCATION_LEDGER_ABI, signer);
+      this.inboxLedger = new ethers.Contract(inboxLedgerAddr, INBOX_LEDGER_ABI, signer);
+      this.gameEngine = new ethers.Contract(engineAddr, GAME_ENGINE_ABI, signer);
+      this.evaluationLedger = new ethers.Contract(evalLedgerAddr, EVALUATION_LEDGER_ABI, signer);
+      if (arenaAddr && arenaAddr !== ethers.constants.AddressZero) {
+        this.arenaEngine = new ethers.Contract(arenaAddr, ARENA_ENGINE_ABI, signer);
+      }
+      if (treasuryAddr && treasuryAddr !== ethers.constants.AddressZero) {
+        this.gTreasury = new ethers.Contract(treasuryAddr, G_TREASURY_ABI, signer);
+      }
+      if (cardLedgerAddr && cardLedgerAddr !== ethers.constants.AddressZero) {
+        this.cardLedger = new ethers.Contract(cardLedgerAddr, CARD_LEDGER_ABI, signer);
+      }
+    })();
+  }
+
+  async ready(): Promise<void> { await this._ready; }
+
+  // ============ Helpers ============
+
+  private formatEntry(e: any): FormattedEntry {
+    return {
+      id: Number(e.id), authorAgent: Number(e.authorAgent),
+      blockNumber: Number(e.blockNumber), timestamp: Number(e.timestamp),
+      importance: Number(e.importance), category: e.category,
+      content: e.content, relatedAgents: e.relatedAgents.map((a: any) => Number(a)),
+    };
+  }
+
+  private formatEntries(entries: any[]): FormattedEntry[] {
+    return entries.map((e: any) => this.formatEntry(e));
+  }
+
+  // ============ Agent ============
+
+  async createAgent(name: string, personality: string, stats: number[], ownerAddr: string) {
+    const tx = await this.gameEngine.createAgent(name, personality, stats, ownerAddr);
+    const receipt = await tx.wait();
+    let agentId: string | null = null;
+    let hexKey: string | null = null;
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "AgentCreated") {
+          agentId = parsed.args.agentId.toString();
+          hexKey = parsed.args.hexKey;
+          break;
+        }
+      } catch {}
+    }
+    // Fallback: if event parsing failed, look up the agent by name
+    if (!agentId) {
+      const id = await this.findAgentByName(name, ownerAddr);
+      if (id > 0) agentId = String(id);
+    }
+    return { agentId, hexKey, txHash: receipt.transactionHash };
+  }
+
+  async findAgentByName(name: string, ownerAddr: string): Promise<number> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const id = Number(await this.registry.getAgentByName(ownerAddr, name));
+        return id; // 0 = not found
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    throw lastErr;
+  }
+
+  async getAgentsByOwner(ownerAddr: string) {
+    const ids: bigint[] = await this.registry.getAgentsByOwner(ownerAddr);
+    return Promise.all(ids.map((id) => this.getAgent(Number(id))));
+  }
+
+  async getAgent(agentId: number) {
+    const [name, personality, stats, location, createdAt] = await this.registry.getAgent(agentId);
+    const score = await this.gameEngine.getScore(agentId);
+    const hCount = await this.gameEngine.hexCount(agentId);
+    const ore = Number(await this.gameEngine.orePool(agentId));
+    return {
+      id: agentId, name, personality,
+      stats: stats.map((s: bigint) => Number(s)),
+      location: Number(location),
+      hexCount: Number(hCount),
+      ore,
+      score: Number(score),
+      createdAt: Number(createdAt),
+    };
+  }
+
+  async listAgents() {
+    const ids: bigint[] = await this.registry.getAllAgentIds();
+    return Promise.all(ids.map((id) => this.getAgent(Number(id))));
+  }
+
+  async moveAgent(agentId: number, toLocation: number) {
+    const tx = await this.registry.moveAgent(agentId, toLocation);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  // ============ Hex / Economy ============
+
+  async getHex(hexKey: string) {
+    const [ownerId, locationId, q, r, mineCount, arsenalCount, lastHarvest, reserve, happiness, happinessUpdatedAt] =
+      await this.gameEngine.getHex(hexKey);
+    return {
+      hexKey, ownerId: Number(ownerId), locationId: Number(locationId),
+      q: Number(q), r: Number(r),
+      mineCount: Number(mineCount), arsenalCount: Number(arsenalCount),
+      lastHarvest: Number(lastHarvest),
+      reserve: Number(reserve),
+      happiness: Number(happiness), happinessUpdatedAt: Number(happinessUpdatedAt),
+      usedSlots: Number(mineCount) + Number(arsenalCount), totalSlots: 6,
+      defense: Number(arsenalCount) * 5,
+      depleted: Number(reserve) === 0,
+    };
+  }
+
+  async getMyHexes(agentId: number) {
+    const keys: string[] = await this.gameEngine.getAgentHexKeys(agentId);
+    const hexes = await Promise.all(keys.map((k) => this.getHex(k)));
+    const ore = Number(await this.gameEngine.orePool(agentId));
+    return { ore, hexes };
+  }
+
+  async harvest(agentId: number) {
+    const tx = await this.gameEngine.harvest(agentId);
+    const receipt = await tx.wait();
+    let oreGained = 0;
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "Harvested") { oreGained = Number(parsed.args.oreGained); break; }
+      } catch {}
+    }
+    const orePool = Number(await this.gameEngine.orePool(agentId));
+    return { oreGained, orePool, txHash: receipt.transactionHash };
+  }
+
+  async build(agentId: number, hexKey: string, buildingType: number) {
+    const tx = await this.gameEngine.build(agentId, hexKey, buildingType);
+    const receipt = await tx.wait();
+    const orePool = Number(await this.gameEngine.orePool(agentId));
+    return { buildingType: buildingType === 1 ? "Mine" : "Arsenal", orePool, txHash: receipt.transactionHash };
+  }
+
+  async attack(agentId: number, targetHexKey: string, sourceHexKey: string, arsenalSpend: number, oreSpend: number) {
+    const tx = await this.gameEngine.attack(agentId, targetHexKey, sourceHexKey, arsenalSpend, oreSpend);
+    const receipt = await tx.wait();
+    let result = { attackPower: 0, defensePower: 0, success: false };
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "AttackResult") {
+          result = {
+            attackPower: Number(parsed.args.attackPower),
+            defensePower: Number(parsed.args.defensePower),
+            success: parsed.args.success,
+          };
+          break;
+        }
+      } catch {}
+    }
+    return { ...result, txHash: receipt.transactionHash };
+  }
+
+  async getScore(agentId: number) { return Number(await this.gameEngine.getScore(agentId)); }
+
+  async getScoreboard() {
+    const ids: bigint[] = await this.registry.getAllAgentIds();
+    const scores = await Promise.all(ids.map(async (id) => {
+      const agentId = Number(id);
+      const [name] = await this.registry.getAgent(agentId);
+      const score = Number(await this.gameEngine.getScore(agentId));
+      const hCount = Number(await this.gameEngine.hexCount(agentId));
+      return { agentId, name, hexCount: hCount, score };
+    }));
+    return scores.sort((a, b) => b.score - a.score);
+  }
+
+  async raid(agentId: number, targetHexKey: string, arsenalSpend: number, oreSpend: number) {
+    const tx = await this.gameEngine.raid(agentId, targetHexKey, arsenalSpend, oreSpend);
+    const receipt = await tx.wait();
+    let result = { attackPower: 0, defensePower: 0, success: false };
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "AttackResult") {
+          result = {
+            attackPower: Number(parsed.args.attackPower),
+            defensePower: Number(parsed.args.defensePower),
+            success: parsed.args.success,
+          };
+          break;
+        }
+      } catch {}
+    }
+    return { ...result, txHash: receipt.transactionHash };
+  }
+
+  async claimNeutral(agentId: number, hexKey: string) {
+    const tx = await this.gameEngine.claimNeutral(agentId, hexKey);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  async inciteRebellion(agentId: number, targetHexKey: string) {
+    const tx = await this.gameEngine.inciteRebellion(agentId, targetHexKey);
+    const receipt = await tx.wait();
+    let result = { success: false, captured: false };
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "InciteResult") {
+          result = { success: parsed.args.success, captured: parsed.args.captured };
+          break;
+        }
+      } catch {}
+    }
+    return { ...result, txHash: receipt.transactionHash };
+  }
+
+  async toKey(q: number, r: number): Promise<string> { return this.gameEngine.toKey(q, r); }
+
+  // ============ Location Ledger ============
+
+  async getWorld() {
+    const [locationIds, hexKeys] = await Promise.all([
+      this.locationLedger.getAllLocationIds() as Promise<bigint[]>,
+      this.gameEngine.getAllHexKeys() as Promise<string[]>,
+    ]);
+    const [locations, hexes] = await Promise.all([
+      Promise.all(locationIds.map(async (id) => {
+        const [name, description, q, r] = await this.locationLedger.getLocation(Number(id));
+        const agentIds: bigint[] = await this.locationLedger.getAgentsAtLocation(Number(id));
+        return { id: Number(id), name, description, q: Number(q), r: Number(r), agents: agentIds.map(Number) };
+      })),
+      Promise.all(hexKeys.map((k) => this.getHex(k))),
+    ]);
+    return { locations, hexes };
+  }
+
+  async writeToLocation(agentId: number, importance: number, category: string, content: string, relatedAgents: number[]): Promise<WriteResult> {
+    const tx = await this.locationLedger.write(agentId, importance, category, content, relatedAgents);
+    const receipt = await tx.wait();
+    return { entryId: 0, used: 0, capacity: 128, txHash: receipt.transactionHash };
+  }
+
+  async boostHappiness(agentId: number, hexKey: string) {
+    const tx = await this.gameEngine.boostHappiness(agentId, hexKey);
+    await tx.wait();
+  }
+
+  async readLocation(locationId: number, count: number): Promise<BoardRead> {
+    const [entries, used, capacity] = await this.locationLedger.readRecent(locationId, count);
+    return { entries: this.formatEntries(entries), used: Number(used), capacity: Number(capacity) };
+  }
+
+  async compactLocation(locationId: number, authorAgent: number, count: number, importance: number, category: string, summary: string) {
+    const tx = await this.locationLedger.compact(locationId, count, authorAgent, importance, category, summary);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  async getNearbyAgents(agentId: number) {
+    const agent = await this.getAgent(agentId);
+    const ids: bigint[] = await this.locationLedger.getAgentsAtLocation(agent.location);
+    const agents = [];
+    for (const id of ids) {
+      if (Number(id) !== agentId) agents.push(await this.getAgent(Number(id)));
+    }
+    return agents;
+  }
+
+  // ============ Agent Ledger (memories) ============
+
+  async writeMemory(agentId: number, importance: number, category: string, content: string, relatedAgents: number[]): Promise<WriteResult> {
+    const tx = await this.agentLedger.write(agentId, importance, category, content, relatedAgents);
+    const receipt = await tx.wait();
+    return { entryId: 0, used: 0, capacity: 64, txHash: receipt.transactionHash };
+  }
+
+  async readMemories(agentId: number, count: number): Promise<BoardRead> {
+    const [entries, used, capacity] = await this.agentLedger.readRecent(agentId, count);
+    return { entries: this.formatEntries(entries), used: Number(used), capacity: Number(capacity) };
+  }
+
+  async compactMemories(agentId: number, count: number, importance: number, category: string, summary: string) {
+    const tx = await this.agentLedger.compact(agentId, count, importance, category, summary);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  // ============ Inbox Ledger ============
+
+  async sendMessage(fromAgent: number, toAgent: number, importance: number, category: string, content: string, relatedAgents: number[]): Promise<WriteResult> {
+    const tx = await this.inboxLedger.write(fromAgent, toAgent, importance, category, content, relatedAgents);
+    const receipt = await tx.wait();
+    return { entryId: 0, used: 0, capacity: 64, txHash: receipt.transactionHash };
+  }
+
+  async readInbox(agentId: number, count: number): Promise<BoardRead> {
+    const [entries, used, capacity] = await this.inboxLedger.readRecent(agentId, count);
+    return { entries: this.formatEntries(entries), used: Number(used), capacity: Number(capacity) };
+  }
+
+  async readInboxFrom(agentId: number, fromAgentId: number): Promise<FormattedEntry[]> {
+    const entries = await this.inboxLedger.readFrom(agentId, fromAgentId);
+    return this.formatEntries(entries);
+  }
+
+  async getConversation(agentA: number, agentB: number): Promise<FormattedEntry[]> {
+    const [aToB, bToA] = await Promise.all([
+      this.readInboxFrom(agentB, agentA), this.readInboxFrom(agentA, agentB),
+    ]);
+    return [...aToB, ...bToA].sort((a, b) => a.blockNumber - b.blockNumber || a.id - b.id);
+  }
+
+  async compactInbox(agentId: number, count: number, importance: number, category: string, summary: string) {
+    const tx = await this.inboxLedger.compact(agentId, count, importance, category, summary);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  // ============ Debate ============
+
+  async startDebate(agentId: number, content: string) {
+    const tx = await this.gameEngine.startDebate(agentId, content);
+    const receipt = await tx.wait();
+    let entryId = 0;
+    let deadline = 0;
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "DebateStarted") {
+          entryId = Number(parsed.args.entryId);
+          deadline = Number(parsed.args.deadline);
+          break;
+        }
+      } catch {}
+    }
+    return { entryId, deadline, txHash: receipt.transactionHash };
+  }
+
+  async voteOnDebate(agentId: number, debateEntryId: number, support: boolean, content: string, oreAmount: number) {
+    const tx = await this.gameEngine.voteOnDebate(agentId, debateEntryId, support, content, oreAmount);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  async resolveDebate(debateEntryId: number, outcomeOverride: boolean) {
+    const tx = await this.gameEngine.resolveDebate(debateEntryId, outcomeOverride);
+    const receipt = await tx.wait();
+    let result = { supportCount: 0, opposeCount: 0, happinessChange: 0 };
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "DebateResolved") {
+          result = {
+            supportCount: Number(parsed.args.supportCount),
+            opposeCount: Number(parsed.args.opposeCount),
+            happinessChange: Number(parsed.args.happinessChange),
+          };
+          break;
+        }
+      } catch {}
+    }
+    return { ...result, txHash: receipt.transactionHash };
+  }
+
+  async getDebate(debateEntryId: number) {
+    const [entryId, hexKey, proposerId, supportCount, opposeCount, deadline, resolved, isOracle, totalSupportOre, totalOpposeOre, expired] =
+      await this.gameEngine.getDebate(debateEntryId);
+    return {
+      entryId: Number(entryId), hexKey, proposerId: Number(proposerId),
+      supportCount: Number(supportCount), opposeCount: Number(opposeCount),
+      deadline: Number(deadline), resolved,
+      isOracle, totalSupportOre: Number(totalSupportOre), totalOpposeOre: Number(totalOpposeOre), expired,
+      timeLeft: Math.max(0, Number(deadline) - Math.floor(Date.now() / 1000)),
+    };
+  }
+
+  /** Record the most recent oracle debate so it can be surfaced to all agents. */
+  noteOracleDebate(entryId: number) {
+    this.lastOracleDebateId = entryId;
+  }
+
+  /** Return the current active (unresolved, unexpired, not-yet-deadline) oracle
+   *  debate, or null. Lets agents see and bet on it every cycle regardless of
+   *  inbox churn. */
+  async getActiveOracleDebate() {
+    if (!this.lastOracleDebateId) return null;
+    try {
+      const d = await this.getDebate(this.lastOracleDebateId);
+      if (!d.entryId || d.resolved || d.expired || d.timeLeft <= 0) return null;
+      return d;
+    } catch {
+      return null;
+    }
+  }
+
+  async expireDebate(debateEntryId: number) {
+    const tx = await this.gameEngine.expireDebate(debateEntryId);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  // ============ Chronicle ============
+
+  async writeChronicle(authorId: number, targetAgentId: number, rating: number, content: string) {
+    const tx = await this.gameEngine.writeChronicle(authorId, targetAgentId, rating, content);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  async getChronicle(agentId: number) {
+    const [score, count, ratingSum] = await this.gameEngine.getChronicle(agentId);
+    return {
+      score: Number(score),
+      count: Number(count),
+      ratingSum: Number(ratingSum),
+      avgRating: Number(count) > 0 ? Number(ratingSum) / Number(count) : 0,
+    };
+  }
+
+  // ============ Evaluation Ledger ============
+
+  async readEvaluations(agentId: number, count: number): Promise<BoardRead> {
+    const [entries, used, capacity] = await this.evaluationLedger.readRecent(agentId, count);
+    return { entries: this.formatEntries(entries), used: Number(used), capacity: Number(capacity) };
+  }
+
+  // ============ World Bible ============
+
+  async writeWorldBible(agentId: number, content: string) {
+    const tx = await this.gameEngine.writeWorldBible(agentId, content);
+    const receipt = await tx.wait();
+    let entryId = 0;
+    const iface = this.gameEngine.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "WorldBibleWritten") {
+          entryId = Number(parsed.args.entryId);
+          break;
+        }
+      } catch {}
+    }
+    return { entryId, txHash: receipt.transactionHash };
+  }
+
+  async getWorldBible() {
+    const [locationId, lastTimestamp, bestAgentId, bestScore] = await this.gameEngine.getWorldBible();
+    return {
+      locationId: Number(locationId),
+      lastTimestamp: Number(lastTimestamp),
+      bestAgentId: Number(bestAgentId),
+      bestScore: Number(bestScore),
+    };
+  }
+
+  async readWorldBible(count: number): Promise<BoardRead> {
+    const { locationId } = await this.getWorldBible();
+    if (locationId === 0) return { entries: [], used: 0, capacity: 128 };
+    return this.readLocation(locationId, count);
+  }
+
+  // ============ Oracle ============
+
+  async setOracleAgent(agentId: number) {
+    const tx = await this.gameEngine.setOracleAgent(agentId);
+    const receipt = await tx.wait();
+    return { txHash: receipt.transactionHash };
+  }
+
+  async getOracleAgentId(): Promise<number> {
+    return Number(await this.gameEngine.oracleAgentId());
+  }
+
+  // ============ Arena ============
+
+  /** Throws if router didn't expose an ArenaEngine (i.e. old deploy). */
+  private requireArena(): ethers.Contract {
+    if (!this.arenaEngine) throw new Error("Arena not deployed — router has no arenaEngine address");
+    return this.arenaEngine;
+  }
+
+  private requireGTreasury(): ethers.Contract {
+    if (!this.gTreasury) throw new Error("G treasury not deployed — router has no gTreasury address");
+    return this.gTreasury;
+  }
+
+  private requireCardLedger(): ethers.Contract {
+    if (!this.cardLedger) throw new Error("Card ledger not deployed — router has no cardLedger address");
+    return this.cardLedger;
+  }
+
+  private decodeCard(card: any) {
+    const unitType = Number(card.unitType);
+    const u = UNIT_CATALOG.find((x) => x.id === unitType);
+    return {
+      cardId: Number(card.id),
+      unitType,
+      ownerAgent: Number(card.ownerAgent),
+      mintedAt: Number(card.mintedAt),
+      name: u?.name || "?",
+      atk: u?.atk,
+      hp: u?.hp,
+      cost: u?.cost,
+      ability: u?.ability,
+    };
+  }
+
+  private decodeListing(listing: any) {
+    return {
+      cardId: Number(listing.cardId),
+      sellerAgent: Number(listing.sellerAgent),
+      askPriceG: Number(listing.askPriceG),
+      listedAt: Number(listing.listedAt),
+      active: Boolean(listing.active),
+    };
+  }
+
+  async arenaBuy(agentId: number, unitType: number) {
+    const arena = this.requireArena();
+    const tx = await arena.buy(agentId, unitType);
+    const receipt = await tx.wait();
+    let result: { cardId?: number; unitType?: number; cost?: number } = {};
+    const iface = arena.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "CardBought") {
+          result = {
+            cardId: Number(parsed.args.cardId),
+            unitType: Number(parsed.args.unitType),
+            cost: Number(parsed.args.cost),
+          };
+          break;
+        }
+      } catch {}
+    }
+    return { ...result, txHash: receipt.transactionHash };
+  }
+
+  async arenaDepositG(agentId: number, amountG: number) {
+    const treasury = this.requireGTreasury();
+    const value = ethers.BigNumber.from(amountG);
+    const tx = await treasury.depositG(agentId, { value });
+    const receipt = await tx.wait();
+    const gBalance = Number(await treasury.gBalance(agentId));
+    return { agentId, depositedG: amountG, g: gBalance, txHash: receipt.transactionHash };
+  }
+
+  async arenaPlaceCard(agentId: number, cardId: number, slot: number) {
+    const arena = this.requireArena();
+    const tx = await arena.placeCard(agentId, cardId, slot);
+    const receipt = await tx.wait();
+    return { agentId, cardId, slot, txHash: receipt.transactionHash };
+  }
+
+  async arenaRemoveCard(agentId: number, slot: number) {
+    const arena = this.requireArena();
+    const tx = await arena.removeCard(agentId, slot);
+    const receipt = await tx.wait();
+    return { agentId, slot, txHash: receipt.transactionHash };
+  }
+
+  async arenaSubmit(agentId: number) {
+    const arena = this.requireArena();
+    const tx = await arena.submit(agentId);
+    const receipt = await tx.wait();
+    let tier = 0, elo = 0, gAtSubmit = 0;
+    const iface = arena.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "GhostSubmitted") {
+          tier = Number(parsed.args.tier);
+          elo = Number(parsed.args.elo);
+          gAtSubmit = Number(parsed.args.gAtSubmit);
+          break;
+        }
+      } catch {}
+    }
+    const labels = ["Bronze", "Silver", "Gold"];
+    return { tier, tierLabel: labels[tier] || "?", elo, gAtSubmit, txHash: receipt.transactionHash };
+  }
+
+  async arenaGetGhost(agentId: number) {
+    const arena = this.requireArena();
+    const treasury = this.gTreasury;
+    const [bench, elo, bucketId, lastUpdate, exists] = await arena.getGhost(agentId);
+    const cardIds = await arena.getGhostCards(agentId);
+    const benchArr = (bench as any[]).map((b) => Number(b));
+    const benchNamed = benchArr.map((unitType, slot) => {
+      const cardId = Number(cardIds[slot]);
+      if (unitType === 0) return { slot, unitType: 0, cardId: 0, empty: true };
+      const u = UNIT_CATALOG.find((x) => x.id === unitType);
+      return { slot, cardId, unitType, name: u?.name || "?", atk: u?.atk, hp: u?.hp, ability: u?.ability };
+    });
+    const orePool = Number(await this.gameEngine.orePool(agentId));
+    const gBalance = treasury ? Number(await treasury.gBalance(agentId)) : null;
+    return {
+      bench: benchNamed,
+      elo: Number(elo),
+      bucketId: Number(bucketId),
+      lastUpdate: Number(lastUpdate),
+      exists,
+      ore: orePool,
+      g: gBalance,
+    };
+  }
+
+  async arenaListInventory(agentId: number) {
+    const cards = this.requireCardLedger();
+    const arena = this.arenaEngine;
+    const cardIds = await cards.getOwnedCards(agentId);
+    const detailed = await Promise.all((cardIds as any[]).map(async (id) => {
+      const card = await cards.getCard(id);
+      const cardId = Number(id);
+      const [onBench, listed] = await Promise.all([
+        arena ? arena.isCardOnBench(agentId, cardId) : Promise.resolve(false),
+        cards.isListed(cardId),
+      ]);
+      return { ...this.decodeCard(card), onBench: Boolean(onBench), listed: Boolean(listed) };
+    }));
+    return { agentId, cards: detailed };
+  }
+
+  async arenaListMarket(unitType?: number, offset = 0, limit = 20) {
+    const cards = this.requireCardLedger();
+    const listings = unitType
+      ? await cards.getActiveListingsByUnit(unitType, offset, limit)
+      : await cards.getActiveListings(offset, limit);
+    const decoded = await Promise.all((listings as any[]).map(async (l) => {
+      const base = this.decodeListing(l);
+      const card = this.decodeCard(await cards.getCard(base.cardId));
+      return { ...base, unitType: card.unitType, name: card.name, atk: card.atk, hp: card.hp, shopCostG: card.cost };
+    }));
+    return { listings: decoded, offset, limit, unitType: unitType ?? null };
+  }
+
+  async arenaPlaceListing(agentId: number, cardId: number, askPriceG: number) {
+    const cards = this.requireCardLedger();
+    const tx = await cards.listCard(agentId, cardId, askPriceG);
+    const receipt = await tx.wait();
+    return { cardId, askPriceG, txHash: receipt.transactionHash };
+  }
+
+  async arenaCancelListing(agentId: number, cardId: number) {
+    const cards = this.requireCardLedger();
+    const tx = await cards.cancelListing(agentId, cardId);
+    const receipt = await tx.wait();
+    return { cardId, txHash: receipt.transactionHash };
+  }
+
+  async arenaBuyListing(buyerAgent: number, cardId: number, maxPriceG: number) {
+    const cards = this.requireCardLedger();
+    const tx = await cards.buyListed(buyerAgent, cardId, maxPriceG);
+    const receipt = await tx.wait();
+    return { cardId, maxPriceG, txHash: receipt.transactionHash };
+  }
+
+  async arenaGetMatch(matchId: number) {
+    const arena = this.requireArena();
+    const [attackerId, defenderId, attackerBench, defenderBench, seed, createdAt, settled, winnerId] =
+      await arena.getMatch(matchId);
+    const decode = (bench: any[]) => (bench as any[]).map((b, slot) => {
+      const t = Number(b);
+      if (t === 0) return { slot, unitType: 0, empty: true };
+      const u = UNIT_CATALOG.find((x) => x.id === t);
+      return { slot, unitType: t, name: u?.name || "?", atk: u?.atk, hp: u?.hp };
+    });
+    return {
+      matchId,
+      attackerId: Number(attackerId),
+      defenderId: Number(defenderId),
+      attackerBench: decode(attackerBench),
+      defenderBench: decode(defenderBench),
+      seed: String(seed),
+      createdAt: Number(createdAt),
+      settled,
+      winnerId: Number(winnerId),
+    };
+  }
+
+  async arenaSimulateMatch(matchId: number) {
+    const arena = this.requireArena();
+    const [turns, winnerAgentId] = await arena.simulateMatch(matchId);
+    const turnsDecoded = (turns as any[]).map((t, i) => ({
+      idx: i,
+      attackerSide: Number(t.attackerSide) === 0 ? "attacker" : "defender",
+      attackerSlot: Number(t.attackerSlot),
+      defenderSlot: Number(t.defenderSlot),
+      damage: Number(t.damage),
+      defenderDied: Boolean(t.defenderDied),
+    }));
+    return { matchId, winnerAgentId: Number(winnerAgentId), turns: turnsDecoded };
+  }
+
+  async arenaRunMatchmaking(tier: number) {
+    const arena = this.requireArena();
+    const tx = await arena.runMatchmaking(tier);
+    const receipt = await tx.wait();
+    const matchIds: number[] = [];
+    const iface = arena.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "MatchmadeInTier") {
+          matchIds.push(Number(parsed.args.matchId));
+        } else if (parsed.name === "MatchCreated") {
+          matchIds.push(Number(parsed.args.matchId));
+        }
+      } catch {}
+    }
+    return { matchesCreated: matchIds.length, matchIds, txHash: receipt.transactionHash };
+  }
+
+  async arenaSettleMatch(matchId: number) {
+    const arena = this.requireArena();
+    const tx = await arena.settleMatch(matchId);
+    const receipt = await tx.wait();
+    let winnerId = 0, newWinnerElo = 0, newLoserElo = 0;
+    const iface = arena.interface;
+    for (const log of receipt.logs) {
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed.name === "MatchSettled") {
+          winnerId = Number(parsed.args.winnerId);
+          newWinnerElo = Number(parsed.args.newWinnerElo);
+          newLoserElo = Number(parsed.args.newLoserElo);
+          break;
+        }
+      } catch {}
+    }
+    return { winnerId, newWinnerElo, newLoserElo, txHash: receipt.transactionHash };
+  }
+
+
+  async arenaNextMatchId(): Promise<number> {
+    const arena = this.requireArena();
+    return Number(await arena.nextMatchId());
+  }
+
+  async arenaPreviewElo(winnerElo: number, loserElo: number) {
+    const arena = this.requireArena();
+    const [newWinner, newLoser] = await arena.previewEloUpdate(winnerElo, loserElo);
+    return {
+      winnerElo, loserElo,
+      newWinnerElo: Number(newWinner),
+      newLoserElo: Number(newLoser),
+      winnerDelta: Number(newWinner) - winnerElo,
+      loserDelta: Number(newLoser) - loserElo,
+    };
+  }
+
+  async arenaGetCard(cardId: number) {
+    const cl = this.requireCardLedger();
+    const card = await cl.getCard(cardId);
+    const unitType = Number(card.unitType);
+    const u = UNIT_CATALOG.find((x) => x.id === unitType);
+    return {
+      cardId: Number(card.id),
+      unitType,
+      ownerAgent: Number(card.ownerAgent),
+      mintedAt: Number(card.mintedAt),
+      name: u?.name || "?",
+      atk: u?.atk,
+      hp: u?.hp,
+      ability: u?.ability,
+    };
+  }
+
+  async creditAgentG(agentId: number, amount: number) {
+    const treasury = this.requireGTreasury();
+    const reason = ethers.utils.formatBytes32String("fund");
+    const tx = await treasury.creditG(agentId, amount, reason);
+    const receipt = await tx.wait();
+    const newBalance = Number(await treasury.gBalance(agentId));
+    return { agentId, amount, newBalance, txHash: receipt.transactionHash };
+  }
+
+  async arenaTierPopulation(tier: number): Promise<number> {
+    const arena = this.requireArena();
+    return Number(await arena.tierPopulation(tier));
+  }
+
+  async arenaGetTierInfo(agentId: number) {
+    const arena = this.requireArena();
+    const [tiers, gBalances] = await arena.tierStates([agentId]);
+    const tier = Number(tiers[0]);
+    const gBalance = Number(gBalances[0]);
+    const labels = ["Bronze", "Silver", "Gold"];
+    const population = Number(await arena.tierPopulation(tier));
+    return { tier, label: labels[tier] || "?", gBalance, agentsInTier: population };
+  }
+
+  async arenaWithdrawSubmission(agentId: number) {
+    const arena = this.requireArena();
+    const tx = await arena.withdrawSubmission(agentId);
+    const receipt = await tx.wait();
+    return { agentId, txHash: receipt.transactionHash };
+  }
+
+  async arenaSetMatchmakingPeriod(tier: number, secs: number) {
+    const arena = this.requireArena();
+    const tx = await arena.setMatchmakingPeriod(tier, secs);
+    const receipt = await tx.wait();
+    return { tier, secs, txHash: receipt.transactionHash };
+  }
+}

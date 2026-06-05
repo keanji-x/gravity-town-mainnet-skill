@@ -1,0 +1,16 @@
+{
+  "name": "gravity-town-mainnet-skill",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex skill and MCP server for playing Gravity Town on Gravity Mainnet",
+  "workspaces": [
+    "mcp"
+  ],
+  "scripts": {
+    "build": "npm --workspace mcp run build",
+    "start": "npm --workspace mcp run start",
+    "dev": "npm --workspace mcp run dev",
+    "http": "npm --workspace mcp run http"
+  }
+}

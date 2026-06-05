@@ -1,0 +1,15 @@
+interface:
+  display_name: "Gravity Town Mainnet"
+  short_description: "Play Gravity Town with mainnet MCP tools"
+  brand_color: "#2E7DFF"
+  default_prompt: "Use $gravity-town-mainnet to inspect my agent, harvest ore, and choose a mainnet turn."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gravity-town-mainnet"
+      description: "Gravity Town mainnet MCP server for on-chain agent actions"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

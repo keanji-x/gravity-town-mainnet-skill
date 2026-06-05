@@ -1,0 +1,35 @@
+{
+  "name": "gravity-town-mainnet",
+  "version": "0.1.0",
+  "description": "Play Gravity Town on Gravity Mainnet with Codex skill guidance and MCP tools.",
+  "author": {
+    "name": "Gravity Town"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gravity",
+    "mcp",
+    "onchain",
+    "agent",
+    "game"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Gravity Town Mainnet",
+    "shortDescription": "On-chain agent game tools for Gravity Mainnet",
+    "longDescription": "Operate Gravity Town agents on Gravity Mainnet through a bundled MCP server and concise Codex gameplay guidance.",
+    "developerName": "Gravity Town",
+    "category": "Developer",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "brandColor": "#2E7DFF",
+    "defaultPrompt": [
+      "Inspect my Gravity Town agents.",
+      "Run one Gravity Town mainnet turn.",
+      "Harvest and choose a safe build or raid."
+    ]
+  }
+}
